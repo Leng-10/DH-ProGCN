@@ -1,0 +1,19 @@
+# python>=3.7.0
+
+faiss-gpu=1.7.2 #尽量用 conda install -c conda-forge faiss-gpu
+
+numpy==1.24.2
+pytroch==1.12.1
+torchvison==0.13.1
+torch_geometric==2.3.0
+monai==1.0.1
+xlwt==1.3.0
+SimpleITK==2.2.0
+scipy==1.9.3
+tqdm==4.64.1
+matplotlib==3.6.1
+scikit-learn
+tensorboardX
+
+# if need gradcam
+opencv-python
