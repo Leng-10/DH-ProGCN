@@ -58,39 +58,45 @@ def train_backbone_dgcn(epoch, dataloader, running_loss_cls):
     return loss
 
 
-def train_ccl(epoch, dataloader, running_loss_dis, running_loss_div):
+def train_ccl(epoch, dataloader, hcluster_result):
     backbone.eval()
     ccl.train()
     dgcn.eval()
+    running_loss0, running_loss1 = 0., 0.
 
     for i, sample in enumerate(dataloader):
         MRI_img, label = sample['T1'], sample['label']
         MRI_img, label = MRI_img.cuda(), label.cuda()
 
-        _, conv_features = backbone(MRI_img)
+        conv_features = backbone(MRI_img)
         conv_features = conv_features.reshape(-1, sets.ccl_dim, 9, 11, 9)
         grouping_result, weighted_feature = ccl(conv_features)
         cls_res = dgcn(conv_features, weighted_feature)
 
         ccl_optimizer.zero_grad()
 
-        loss1 = ccl_loss(weighted_feature)  # [dis_loss, div_loss]
-        loss2 = cls_loss(cls_res, label)  # classification loss
+        loss1 = cls_loss(cls_res, label)  # classification loss
+        if sets.cluster_hierarchical is not True:
+            loss2 = ccl_loss(conv_features)  # [dis_loss, div_loss]
+        else:
+            loss2 = ccl_loss(conv_features, hcluster_result)  # hierarchical prototype loss
 
-        running_loss_dis += loss1[0].item()
-        running_loss_div += loss1[1].item()
-
-        loss = (loss1[0] + loss1[1] + loss2)
+        running_loss0 += loss2[0].item()
+        running_loss1 += loss2[1].item()
+        loss = (loss2[0] + loss2[1] + loss1)
 
         loss.backward()
         ccl_optimizer.step()
 
         if i % 50 == 49:
-            print('[%d, %5d] loss: %.3f' % (epoch + 1, i + 1, loss2))
-            print('[%d, %5d] dis/div loss: %.8f, %.8f' %
-                  (epoch + 1, i + 1, running_loss_dis / (i + 1), running_loss_div / (i + 1)))
-
-            running_loss_ccl = running_loss_dis / (i + 1) + running_loss_div / (i + 1)
+            print('[%d, %5d] classfication loss: %.3f' % (epoch + 1, i + 1, loss1))
+            if sets.cluster_hierarchical is not True:
+                print('[%d, %5d] dis/div loss: %.8f, %.8f' %
+                      (epoch + 1, i + 1, running_loss0 / (i + 1), running_loss1 / (i + 1)))
+            else:
+                print('[%d, %5d] node/edge loss: %.8f, %.8f' %
+                      (epoch + 1, i + 1, running_loss0 / (i + 1), running_loss1 / (i + 1)))
+            running_loss_ccl = running_loss0 / (i + 1) + running_loss1 / (i + 1)
             scheduler_ccl.step(running_loss_ccl)
 
     return loss
@@ -126,7 +132,7 @@ def validate(data_loader):
 
             del (cls_res)
 
-    acc, auc, F1_score, sen, spe, ave = calculate(labels, predicted, predicted1)
+    acc, auc, F1_score, sen, spe = calculate(labels, predicted, predicted1)
     print('validating acc: %3f%%'%(acc))
 
     return acc, auc, F1_score, sen, spe
@@ -155,15 +161,19 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=sets.batch_size, num_workers=sets.num_workers, shuffle=True, pin_memory=True)
     test_dataset = Dataset_single(sets, phase='test')
     test_loader = DataLoader(test_dataset, batch_size=sets.batch_size, num_workers=sets.num_workers, shuffle=False, pin_memory=False)
+    hcluster_result = torch.load('{}/hcluster_result_{}_{}_{}{}.pth'
+                                 .format(sets.cluster_result_savepath, sets.classes[0], sets.classes[1],
+                                         'train', sets.part_nums_hierarchical))
+    # cluster_label = index_to_label(hcluster_result['im2cluster'][0], sets.part_nums_hierarchical[0])
 
     for epoch in range(sets.n_epochs_gcn):
-        running_loss_cls, running_loss_dis, running_loss_div = 0., 0., 0.
+        running_loss_cls = 0.
 
         print('training')
         if (epoch+1) % sets.n_epoch_interval != 0:
             train_loss = train_backbone_dgcn(epoch, train_loader, running_loss_cls)
         else:
-            train_loss = train_ccl(epoch, train_loader, running_loss_dis, running_loss_div)
+            train_loss = train_ccl(epoch, train_loader, hcluster_result)
 
         test_acc, test_auc, test_f1, test_sen, test_spe = validate(test_loader)
 
@@ -221,8 +231,9 @@ if __name__ == '__main__':
     else:
         part_num = sets.part_nums_hierarchical[0]
         sets.pretrain_savepath_ccl = '{}/{}'.format(sets.pretrain_savepath_ccl, sets.part_nums_hierarchical)
-        ccl_loss = channel_clustering_hpro_loss()
+        ccl_loss = channel_clustering_hpro_loss(sets.part_nums_hierarchical)
 
+    part_num = sets.part_num #houmianshandiao
     present_time = time.strftime('%m-%d_%H-%M', time.localtime(time.time()))
     sets.sum_savpath = '{}/cluster{}/{}'.format(sets.sum_savpath, part_num, present_time)
     sets.log_savpath = '{}/{}/{}'.format(sets.log_savpath, part_num, present_time)
